@@ -1,0 +1,7 @@
+{
+    "cpu_limit": 1,
+    "ram_limit": 10,
+    "disk_min_gb": 500,
+    "net_limit_gb": 50,
+    "battery_min_percent": 20
+}
