@@ -9,11 +9,16 @@ import os
 
 
 def load_config():
-    with open("config.json", "r", encoding="utf-8") as file:
-        config = json.load(file)
-    return config
-
-
+    try:
+        with open("config.json", "r", encoding="utf-8") as file:
+            config = json.load(file)
+        return config
+    except FileNotFoundError:
+        print("КРИТИЧНА ПОМИЛКА: Файл config.json не знайдено!")
+        exit(1)
+    except json.JSONDecodeError:
+        print("КРИТИЧНА ПОМИЛКА: Файл config.json пошкоджено (неправильний JSON)!")
+        exit(1)
 
 # python main.py
 
@@ -23,20 +28,20 @@ def write_log(message):
         file.write(f"[{current_time}] {message}\n")
 
 
-def collect_metrics():
+def collect_metrics(previous_net_io):
     cpu_usage = psutil.cpu_percent(interval=1)
     ram_usage = psutil.virtual_memory().percent
     disk_free_gb = psutil.disk_usage('C:\\').free / (1024**3)
     battery_info = psutil.sensors_battery()
+    current_net_io = psutil.net_io_counters()
     if battery_info is not None:
         battery_percent = battery_info.percent
         is_plugged = battery_info.power_plugged
     else:
         battery_percent = "Нет батареи (ПК)"
         is_plugged = True
-    net_io = psutil.net_io_counters()
-    net_sent_gb = net_io.bytes_sent / (1024**3)
-    net_recv_gb = net_io.bytes_recv / (1024**3)
+    net_sent_gb = (current_net_io.bytes_sent - previous_net_io.bytes_sent) / (1024**3)
+    net_recv_gb = (current_net_io.bytes_recv - previous_net_io.bytes_recv) / (1024**3)
     return {
         "cpu": cpu_usage,
         "ram": ram_usage,
@@ -45,7 +50,7 @@ def collect_metrics():
         "is_plugged": is_plugged,
         "net_sent": net_sent_gb,
         "net_recv": net_recv_gb
-    }
+    }, current_net_io
 
 def check_thresholds(metrics, config, alert_states):
     if (metrics["net_sent"] + metrics["net_recv"]) > config["net_limit_gb"]:
@@ -75,11 +80,11 @@ def check_thresholds(metrics, config, alert_states):
             print("ТРЕВОГА: Оперативна пам'ять перевантажена!")
             write_log("ТРЕВОГА: Оперативна пам'ять перевантажена!")
             alert_states["ram"] = True
-        else:
-            if alert_states["ram"]:
-                print("Все ок: Оперативна пам'ять в нормі")
-                write_log("Все ок: Оперативна пам'ять в нормі")
-                alert_states["ram"] = False
+    else:
+        if alert_states["ram"]:
+            print("Все ок: Оперативна пам'ять в нормі")
+            write_log("Все ок: Оперативна пам'ять в нормі")
+            alert_states["ram"] = False
 
 
     if metrics["disk"] < config["disk_min_gb"]:
@@ -102,7 +107,7 @@ def check_thresholds(metrics, config, alert_states):
             print("Все ок: Заряд батареї в нормі")
             write_log("Все ок: Заряд батареї в нормі")
             alert_states["battery"] = False
-    # Проверка порта
+    
     target = config["server_to_check"]
     if not check_network_port(target):
         if not alert_states["net_port"]:
@@ -121,13 +126,46 @@ def validate_config(config):
         if f not in config:
             print(f"ПОМИЛКА: В конфігу відсутній параметр {f}")
             exit(1)
+    cpu_limit_value = config["cpu_limit"]
+    if not isinstance(cpu_limit_value, (int, float)) or not (0 <= cpu_limit_value <= 100):
+        print("ПОМИЛКА: Значення cpu_limit має бути числом від 0 до 100")
+        exit(1)
+    ram_limit_value = config["ram_limit"]
+    if not isinstance(ram_limit_value, (int, float)) or not (0 <= ram_limit_value <= 100):
+        print("ПОМИЛКА: Значення ram_limit має бути числом від 0 до 100")
+        exit(1)
+    battery_min_percent_value = config["battery_min_percent"]
+    if not isinstance(battery_min_percent_value, (int, float)) or not (0 <= battery_min_percent_value <= 100):
+        print("ПОМИЛКА: Значення battery_min_percent має бути числом від 0 до 100")
+        exit(1)
+    disk_min_gb_value = config["disk_min_gb"]
+    if not isinstance(disk_min_gb_value, (int, float)) or not (disk_min_gb_value >= 0):
+        print("ПОМИЛКА: Значення disk_min_gb має бути числом, не меншим за нуль (>= 0)")
+        exit(1)
+    net_limit_gb_value = config["net_limit_gb"]
+    if not isinstance(net_limit_gb_value, (int, float)) or not (net_limit_gb_value >= 0):
+        print("ПОМИЛКА: Значення net_limit_gb має бути числом, не меншим за нуль (>= 0)")
+        exit(1)
+    check_interval_seconds_value = config["check_interval_seconds"]
+    if not isinstance(check_interval_seconds_value, (int, float)) or not (check_interval_seconds_value > 0):
+        print("ПОМИЛКА: Значення check_interval_seconds має бути додатним числом (> 0)")
+        exit(1)
+    server_value = config["server_to_check"]
+    if not isinstance(server_value, str) or (":" not in server_value):
+        print("ПОМИЛКА: server_to_check має бути рядком у форматі host:port")
+        exit(1)
+    host, port = server_value.split(":")
+    if not port.isdigit() or not (1 <= int(port) <= 65535):
+        print("ПОМИЛКА: Порт має бути числом від 1 до 65535")
+        exit(1)
+    
 
 def check_network_port(target):
     try:
         host, port = target.split(":")
-        socket.create_connection((host, int(port)), timeout=3)
-        return True
-    except (socket.timeout, ConnectionRefusedError, OSError):
+        with socket.create_connection((host, int(port)), timeout=3) as sock:
+            return True
+    except(socket.timeout, ConnectionRefusedError, OSError, ValueError):
         return False
 
 def main():
@@ -135,8 +173,11 @@ def main():
     validate_config(config)
     alert_states = {"cpu": False, "ram": False, "disk": False, "net": False, "battery": False,"net_port": False}
     try:
+        previous_net_io = psutil.net_io_counters()
+        print("Моніторинг успішно запущено! Очікування даних...")
         while True:
-            metrics = collect_metrics()
+            metrics, previous_net_io = collect_metrics(previous_net_io)
+            print(f"Поточний стан: CPU {metrics['cpu']}%, RAM {metrics['ram']}%")
             check_thresholds(metrics, config, alert_states)
             time.sleep(config["check_interval_seconds"])
     except KeyboardInterrupt:

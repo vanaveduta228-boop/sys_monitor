@@ -1,9 +1,9 @@
 {
-    "cpu_limit": 80,
-    "ram_limit": 85,
+    "cpu_limit": 85,
+    "ram_limit": 80,
     "disk_min_gb": 15,
-    "net_limit_gb": 100,
+    "net_limit_gb": 5,
     "battery_min_percent": 20,
     "check_interval_seconds": 60,
-    "server_to_check": "google.com:80"
+    "server_to_check": "8.8.8.8:53"
 }
